@@ -2,7 +2,7 @@
 DevSecOps + AI: Real-time Phishing Detection with Enforcement
 MLOps Feedback Loop + Automated Security Gates
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
@@ -50,7 +50,6 @@ try:
         if os.path.exists(METADATA_PATH):
             with open(METADATA_PATH, 'r') as f:
                 model_metadata = json.load(f)
-        # FIXED: Added missing closing brace
         logger.info(f"Model loaded - Version: {model_metadata.get('model_version', 'unknown')}")
     else:
         logger.warning(f"Model files not found at {MODEL_PATH}")
