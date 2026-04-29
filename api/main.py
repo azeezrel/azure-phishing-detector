@@ -50,7 +50,10 @@ try:
         if os.path.exists(METADATA_PATH):
             with open(METADATA_PATH, 'r') as f:
                 model_metadata = json.load(f)
-        logger.info(f"Model loaded - Version: {model_metadata.get('model_version', 'unknown')")
+        # FIXED: Added missing closing brace
+        logger.info(f"Model loaded - Version: {model_metadata.get('model_version', 'unknown')}")
+    else:
+        logger.warning(f"Model files not found at {MODEL_PATH}")
 except Exception as e:
     logger.error(f"Failed to load model: {e}")
 
