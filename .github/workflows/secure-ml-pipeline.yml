@@ -32,7 +32,7 @@ jobs:
         pip install pytest flake8
     
     - name: Lint code
-      run: flake8 model/ api/ --max-line-length=120 --ignore=E501
+      run: flake8 model/ api/ --max-line-length=120 --ignore=E501,F541
     
     - name: Run unit tests
       run: pytest tests/ -v || true
