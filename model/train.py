@@ -41,26 +41,21 @@ def train_model():
     print("Training Phishing Detection Model")
     print("=" * 60)
 
-    # Create dataset
     df = create_dataset()
     print(f"Dataset: {len(df)} emails")
 
-    # Vectorize text
     vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
     X = vectorizer.fit_transform(df['email'])
     y = df['label']
 
-    # Split data
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
     print(f"Training samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
 
-    # Train model
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
 
-    # Evaluate
     y_pred = model.predict(X_test)
     accuracy = model.score(X_test, y_test)
 
@@ -68,12 +63,10 @@ def train_model():
     print(classification_report(y_test, y_pred, target_names=['Legitimate', 'Phishing']))
     print(f"\nAccuracy: {accuracy:.2%}")
 
-    # Save model
     os.makedirs('model', exist_ok=True)
     joblib.dump(model, 'model/phishing_model.pkl')
     joblib.dump(vectorizer, 'model/vectorizer.pkl')
 
-    # Save metadata
     metadata = {
         'model_version': f"v{datetime.now().strftime('%Y%m%d%H%M%S')}",
         'training_date': datetime.now().isoformat(),
@@ -84,7 +77,6 @@ def train_model():
     with open('model/metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"Model saved to model/phishing_model.pkl")
     return model, vectorizer
 
 
