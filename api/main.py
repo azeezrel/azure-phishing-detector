@@ -84,7 +84,7 @@ def train_model():
     with open('model/metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
 
-    # Fixed: Removed the 'f' prefix from this print statement
+    # THIS IS THE FIXED LINE - NO 'f' PREFIX
     print("Model saved to model/phishing_model.pkl")
     return model, vectorizer
 
