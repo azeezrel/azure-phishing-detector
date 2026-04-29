@@ -15,7 +15,6 @@ permissions:
 env:
   MODEL_ACCURACY_THRESHOLD: 0.70
   AZURE_WEBAPP_NAME: appphishing-cgdkcwgbhqfkcngt
-  AZURE_RESOURCE_GROUP: phishingRG
 
 jobs:
   # MLOps: Model Training and Validation
@@ -116,7 +115,7 @@ jobs:
       with:
         sarif_file: trivy-results.sarif
 
-  # Actual Deployment to Azure
+  # Deployment - Using Publish Profile Only
   deployment:
     name: Deploy to Azure
     runs-on: ubuntu-latest
@@ -133,11 +132,6 @@ jobs:
         name: trained-model
         path: model/
     
-    - name: Login to Azure
-      uses: azure/login@v2
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-    
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v3
       with:
@@ -146,10 +140,9 @@ jobs:
     
     - name: Verify deployment
       run: |
-        echo "Waiting for deployment to stabilize..."
+        echo "Waiting for deployment..."
         sleep 30
-        echo "Verifying https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/health"
-        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/health || exit 1
+        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/health
         echo "✅ Deployment successful!"
 
   # Feedback Retraining Trigger
