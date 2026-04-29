@@ -2,14 +2,18 @@
 DevSecOps + AI: Real-time Phishing Detection with Enforcement
 MLOps Feedback Loop + Automated Security Gates
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from datetime import datetime
 import joblib
 import logging
 import json
 import os
+import secrets
 from typing import Optional
 
 # Configure logging for SIEM integration
@@ -22,6 +26,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Add security middleware
+app.add_middleware(HTTPSRedirectMiddleware)  # Force HTTPS in production
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["*.azurewebsites.net", "*.azurecontainerapps.io", "localhost", "127.0.0.1"]
+)
+
 # Add CORS middleware for web access
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +41,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Key authentication
+API_KEY = os.getenv("API_KEY", secrets.token_urlsafe(32))
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    """Verify API key for protected endpoints"""
+    if api_key is None:
+        # Allow requests without API key for now (optional)
+        return None
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return api_key
 
 # Load model with error handling
 MODEL_PATH = os.getenv("MODEL_PATH", "model/phishing_model.pkl")
@@ -41,7 +65,7 @@ try:
     vectorizer = joblib.load(VECTORIZER_PATH)
     with open(METADATA_PATH, 'r') as f:
         model_metadata = json.load(f)
-    logger.info(f"✅ Model loaded successfully - Version: {model_metadata['model_version']}")
+    logger.info(f"✅ Model loaded successfully - Version: {model_metadata.get('model_version', 'unknown')}")
 except Exception as e:
     logger.error(f"❌ Failed to load model: {e}")
     model = None
@@ -69,7 +93,7 @@ def log_incident(email_content: str, risk_score: float, action: str, is_correct:
     """Log security incidents for feedback loop and SIEM"""
     incident = {
         "timestamp": datetime.utcnow().isoformat(),
-        "email_content": email_content[:500],  # Limit length
+        "email_content": email_content[:500],
         "risk_score": risk_score,
         "action": action,
         "confirmed_phishing": is_correct
@@ -89,13 +113,11 @@ def log_incident(email_content: str, risk_score: float, action: str, is_correct:
         
         if sample_count >= 50:
             logger.warning(f"🚨 {sample_count} feedback samples collected - Retraining recommended!")
-            # In production: Trigger Azure DevOps pipeline here
-            # Example: requests.post("https://dev.azure.com/...", json={"trigger": "retrain"})
     except:
         pass
 
 @app.post("/scan", response_model=ScanResponse)
-async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTasks):
+async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
     """
     AI-powered scan with automatic enforcement (DevSecOps gate)
     """
@@ -115,7 +137,6 @@ async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTask
         if risk_score > 0.75:
             action = "BLOCK"
             logger.warning(f"🚨 BLOCKED: High-risk email (score: {risk_score:.2%})")
-            # Log incident for SIEM and feedback loop
             background_tasks.add_task(log_incident, request.email_content, risk_score, action)
             
         elif risk_score > 0.5:
@@ -142,26 +163,20 @@ async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTask
 
 @app.post("/feedback")
 async def provide_feedback(email_content: str, was_correct: bool):
-    """
-    MLOps Feedback Loop: Security team confirms if detection was correct
-    This triggers model retraining after enough samples
-    """
+    """MLOps Feedback Loop: Security team confirms if detection was correct"""
     logger.info(f"📝 Feedback received: {'Correct' if was_correct else 'Incorrect'} detection")
     
     try:
-        # Read existing feedback
         if not os.path.exists(FEEDBACK_FILE):
             return {"status": "error", "message": "No incidents found"}
         
         with open(FEEDBACK_FILE, "r") as f:
             lines = f.readlines()
         
-        # Find and update the latest matching email
         updated = False
         for i in range(len(lines) - 1, -1, -1):
             data = json.loads(lines[i])
             if data['email_content'] == email_content:
-                # Set confirmed_phishing based on risk and feedback
                 if data['risk_score'] > 0.5:
                     data['confirmed_phishing'] = was_correct
                 else:
@@ -174,7 +189,6 @@ async def provide_feedback(email_content: str, was_correct: bool):
             with open(FEEDBACK_FILE, "w") as f:
                 f.writelines(lines)
             
-            # Check if we have enough samples for retraining
             sample_count = len(lines)
             if sample_count >= 50:
                 logger.warning(f"🎯 {sample_count} samples collected! Ready for model retraining")
@@ -191,7 +205,6 @@ async def provide_feedback(email_content: str, was_correct: bool):
 @app.get("/metrics")
 async def get_metrics():
     """MLOps: Model performance metrics"""
-    # Calculate metrics from feedback log
     metrics = {
         "model_version": model_metadata.get('model_version', '1.0.0'),
         "accuracy": model_metadata.get('accuracy', 0.75),
@@ -199,7 +212,6 @@ async def get_metrics():
         "status": "healthy" if model is not None else "degraded"
     }
     
-    # Add feedback stats if available
     if os.path.exists(FEEDBACK_FILE):
         try:
             with open(FEEDBACK_FILE, "r") as f:
