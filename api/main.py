@@ -1,93 +1,137 @@
 """
-Phishing Detection Model Training Script
+DevSecOps + AI: Real-time Phishing Detection with Enforcement
+MLOps Feedback Loop + Automated Security Gates
 """
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel, Field
+from datetime import datetime
 import joblib
+import logging
 import json
 import os
-from datetime import datetime
+from typing import Optional
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="AI Phishing Detection API",
+    description="MLOps + DevSecOps: Automated security enforcement",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*.azurewebsites.net", "*.azurecontainerapps.io", "localhost", "127.0.0.1", "*"]
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+MODEL_PATH = os.getenv("MODEL_PATH", "model/phishing_model.pkl")
+VECTORIZER_PATH = os.getenv("VECTORIZER_PATH", "model/vectorizer.pkl")
+METADATA_PATH = os.getenv("METADATA_PATH", "model/metadata.json")
+
+model = None
+vectorizer = None
+model_metadata = {'model_version': 'unknown', 'accuracy': 0}
+
+try:
+    if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+        model = joblib.load(MODEL_PATH)
+        vectorizer = joblib.load(VECTORIZER_PATH)
+        if os.path.exists(METADATA_PATH):
+            with open(METADATA_PATH, 'r') as f:
+                model_metadata = json.load(f)
+        logger.info(f"Model loaded - Version: {model_metadata.get('model_version', 'unknown')")
+except Exception as e:
+    logger.error(f"Failed to load model: {e}")
 
 
-def create_dataset():
-    """Create phishing detection dataset"""
-    phishing_emails = [
-        "Your account has been compromised. Click here to verify immediately.",
-        "Urgent: Update your payment information to avoid suspension.",
-        "Unusual login detected from Russia. Verify your identity now.",
-        "Congratulations! You won $1000 gift card. Click to claim.",
-        "Your invoice #INV-2024 is past due. Pay immediately."
-    ]
-
-    legitimate_emails = [
-        "Meeting reminder: DevOps sync at 2 PM tomorrow.",
-        "Your build #1234 completed successfully. Logs attached.",
-        "Weekly report: Q4 metrics are now available.",
-        "Password change confirmation for your corporate account.",
-        "Your PR #567 has been approved and merged to main branch."
-    ]
-
-    emails = phishing_emails + legitimate_emails
-    labels = [1] * len(phishing_emails) + [0] * len(legitimate_emails)
-    return pd.DataFrame({'email': emails, 'label': labels})
+class EmailScanRequest(BaseModel):
+    email_content: str = Field(..., min_length=1, max_length=5000)
+    sender: Optional[str] = None
+    subject: Optional[str] = None
 
 
-def train_model():
-    """Train phishing detection model"""
-    print("=" * 60)
-    print("Training Phishing Detection Model")
-    print("=" * 60)
+class ScanResponse(BaseModel):
+    risk_score: float
+    is_phishing: bool
+    confidence: float
+    action: str
+    model_version: str
+    timestamp: str
 
-    # Create dataset
-    df = create_dataset()
-    print(f"Dataset: {len(df)} emails")
 
-    # Vectorize text
-    vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
-    X = vectorizer.fit_transform(df['email'])
-    y = df['label']
+@app.post("/scan", response_model=ScanResponse)
+async def scan_email(request: EmailScanRequest):
+    logger.info(f"Scanning email from: {request.sender or 'unknown'}")
 
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+    if model is None or vectorizer is None:
+        email_lower = request.email_content.lower()
+        phishing_patterns = ['verify', 'click here', 'urgent', 'compromised']
+        risk_score = sum(0.25 for p in phishing_patterns if p in email_lower)
+        risk_score = min(risk_score, 1.0)
+    else:
+        email_vector = vectorizer.transform([request.email_content])
+        proba = model.predict_proba(email_vector)[0]
+        risk_score = float(proba[1])
+
+    confidence = abs(risk_score - 0.5) * 2
+
+    if risk_score > 0.75:
+        action = "BLOCK"
+    elif risk_score > 0.5:
+        action = "QUARANTINE"
+    else:
+        action = "ALLOW"
+
+    return ScanResponse(
+        risk_score=risk_score,
+        is_phishing=risk_score > 0.5,
+        confidence=confidence,
+        action=action,
+        model_version=model_metadata.get('model_version', '1.0.0'),
+        timestamp=datetime.utcnow().isoformat()
     )
-    print(f"Training samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
 
-    # Train model
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
 
-    # Evaluate
-    y_pred = model.predict(X_test)
-    accuracy = model.score(X_test, y_test)
-
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=['Legitimate', 'Phishing']))
-    print(f"\nAccuracy: {accuracy:.2%}")
-
-    # Save model
-    os.makedirs('model', exist_ok=True)
-    joblib.dump(model, 'model/phishing_model.pkl')
-    joblib.dump(vectorizer, 'model/vectorizer.pkl')
-
-    # Save metadata
-    metadata = {
-        'model_version': f"v{datetime.now().strftime('%Y%m%d%H%M%S')}",
-        'training_date': datetime.now().isoformat(),
-        'accuracy': float(accuracy),
-        'training_samples': len(df)
+@app.get("/metrics")
+async def get_metrics():
+    return {
+        "model_version": model_metadata.get('model_version', '1.0.0'),
+        "accuracy": model_metadata.get('accuracy', 0.75),
+        "status": "healthy" if model is not None else "degraded"
     }
 
-    with open('model/metadata.json', 'w') as f:
-        json.dump(metadata, f, indent=2)
 
-    # THIS IS THE FIXED LINE - NO 'f' PREFIX
-    print("Model saved to model/phishing_model.pkl")
-    return model, vectorizer
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "model_version": model_metadata.get('model_version', 'unknown'),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/")
+async def root():
+    return {
+        "service": "AI Phishing Detection API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": ["/scan", "/metrics", "/health", "/docs"]
+    }
 
 
 if __name__ == "__main__":
-    train_model()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
