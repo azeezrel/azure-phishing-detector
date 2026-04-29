@@ -4,7 +4,9 @@ MLOps Feedback Loop + Automated Security Gates
 """
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-# HTTPSRedirectMiddleware removed - Azure App Service handles HTTPS at the edge
+# IMPORTANT: DO NOT use HTTPSRedirectMiddleware on Azure App Service
+# Azure terminates HTTPS at the edge and forwards HTTP internally
+# from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -26,9 +28,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# NOTE: Azure App Service terminates HTTPS at the edge and forwards HTTP internally
-# Therefore, HTTPSRedirectMiddleware is NOT needed and would cause redirect loops
-# Security: Azure handles HTTPS automatically - no middleware required
+# DO NOT add HTTPSRedirectMiddleware - it causes redirect loops on Azure App Service
+# The line below is COMMENTED OUT - this is the fix!
+# app.add_middleware(HTTPSRedirectMiddleware)
 
 # Trusted hosts middleware (allows Azure domains)
 app.add_middleware(
@@ -52,7 +54,6 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 async def verify_api_key(api_key: str = Depends(api_key_header)):
     """Verify API key for protected endpoints"""
     if api_key is None:
-        # Allow requests without API key for now (optional)
         return None
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
@@ -63,12 +64,10 @@ MODEL_PATH = os.getenv("MODEL_PATH", "model/phishing_model.pkl")
 VECTORIZER_PATH = os.getenv("VECTORIZER_PATH", "model/vectorizer.pkl")
 METADATA_PATH = os.getenv("METADATA_PATH", "model/metadata.json")
 
-# Global variables for model
 model = None
 vectorizer = None
-model_metadata = {'model_version': 'unknown', 'accuracy': 0}
+model_metadata = {'model_version': 'unknown', 'accuracy': 0, 'training_samples': 0}
 
-# Try to load model
 try:
     if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
         model = joblib.load(MODEL_PATH)
@@ -78,11 +77,9 @@ try:
                 model_metadata = json.load(f)
         logger.info(f"✅ Model loaded successfully - Version: {model_metadata.get('model_version', 'unknown')}")
     else:
-        logger.warning(f"⚠️ Model files not found at {MODEL_PATH}. Running in demo mode.")
+        logger.warning(f"⚠️ Model files not found at {MODEL_PATH}")
 except Exception as e:
     logger.error(f"❌ Failed to load model: {e}")
-    model = None
-    vectorizer = None
 
 class EmailScanRequest(BaseModel):
     email_content: str = Field(..., min_length=1, max_length=5000)
@@ -98,87 +95,40 @@ class ScanResponse(BaseModel):
     model_version: str
     timestamp: str
 
-# Feedback storage for MLOps loop
 FEEDBACK_FILE = "feedback_log.json"
 
-def log_incident(email_content: str, risk_score: float, action: str, is_correct: bool = None):
-    """Log security incidents for feedback loop and SIEM"""
-    incident = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "email_content": email_content[:500],
-        "risk_score": risk_score,
-        "action": action,
-        "confirmed_phishing": is_correct
-    }
-    
-    try:
-        with open(FEEDBACK_FILE, "a") as f:
-            f.write(json.dumps(incident) + "\n")
-        logger.info(f"📝 Incident logged: {action} - Risk: {risk_score:.2%}")
-    except Exception as e:
-        logger.error(f"Failed to log incident: {e}")
-    
-    # Count feedback samples for retraining trigger
-    try:
-        if os.path.exists(FEEDBACK_FILE):
-            with open(FEEDBACK_FILE, "r") as f:
-                sample_count = sum(1 for _ in f)
-            
-            if sample_count >= 50:
-                logger.warning(f"🚨 {sample_count} feedback samples collected - Retraining recommended!")
-    except:
-        pass
-
-def simple_rule_based_detection(email_content: str) -> float:
-    """Fallback rule-based detection when ML model is not available"""
+def simple_fallback_detection(email_content: str) -> float:
+    """Simple rule-based detection when ML model unavailable"""
     email_lower = email_content.lower()
-    phishing_patterns = [
-        'verify', 'account', 'click here', 'urgent', 'compromised',
-        'suspended', 'unusual login', 'congratulations', 'invoice',
-        'past due', 'expire', 'payment', 'limited', 'blocked'
-    ]
-    
-    score = 0
-    for pattern in phishing_patterns:
-        if pattern in email_lower:
-            score += 0.12
-    
+    phishing_patterns = ['verify', 'click here', 'urgent', 'compromised', 'password', 'account']
+    score = sum(0.15 for p in phishing_patterns if p in email_lower)
     return min(score, 1.0)
 
 @app.post("/scan", response_model=ScanResponse)
 async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
-    """
-    AI-powered scan with automatic enforcement (DevSecOps gate)
-    """
+    """AI-powered scan with automatic enforcement (DevSecOps gate)"""
     logger.info(f"📧 Scanning email from: {request.sender or 'unknown'}")
     
     try:
-        # Use ML model if available, otherwise fallback to rule-based
         if model is not None and vectorizer is not None:
             email_vector = vectorizer.transform([request.email_content])
             proba = model.predict_proba(email_vector)[0]
             risk_score = float(proba[1])
         else:
-            # Fallback to rule-based detection
-            risk_score = simple_rule_based_detection(request.email_content)
+            risk_score = simple_fallback_detection(request.email_content)
             logger.info("Using fallback rule-based detection")
         
         confidence = abs(risk_score - 0.5) * 2
         
-        # DevSecOps: Enforce Security Policy
         if risk_score > 0.75:
             action = "BLOCK"
-            logger.warning(f"🚨 BLOCKED: High-risk email (score: {risk_score:.2%})")
-            background_tasks.add_task(log_incident, request.email_content, risk_score, action)
-            
+            logger.warning(f"🚨 BLOCKED (score: {risk_score:.2%})")
         elif risk_score > 0.5:
             action = "QUARANTINE"
-            logger.warning(f"⚠️ QUARANTINED: Suspicious email (score: {risk_score:.2%})")
-            background_tasks.add_task(log_incident, request.email_content, risk_score, action)
-            
+            logger.warning(f"⚠️ QUARANTINED (score: {risk_score:.2%})")
         else:
             action = "ALLOW"
-            logger.info(f"✅ ALLOWED: Safe email (score: {risk_score:.2%})")
+            logger.info(f"✅ ALLOWED (score: {risk_score:.2%})")
         
         return ScanResponse(
             risk_score=risk_score,
@@ -188,78 +138,19 @@ async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTask
             model_version=model_metadata.get('model_version', '1.0.0'),
             timestamp=datetime.utcnow().isoformat()
         )
-    
     except Exception as e:
         logger.error(f"Scan error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
-@app.post("/feedback")
-async def provide_feedback(email_content: str, was_correct: bool):
-    """MLOps Feedback Loop: Security team confirms if detection was correct"""
-    logger.info(f"📝 Feedback received: {'Correct' if was_correct else 'Incorrect'} detection")
-    
-    try:
-        if not os.path.exists(FEEDBACK_FILE):
-            return {"status": "error", "message": "No incidents found"}
-        
-        with open(FEEDBACK_FILE, "r") as f:
-            lines = f.readlines()
-        
-        updated = False
-        for i in range(len(lines) - 1, -1, -1):
-            data = json.loads(lines[i])
-            if data['email_content'] == email_content:
-                if data['risk_score'] > 0.5:
-                    data['confirmed_phishing'] = was_correct
-                else:
-                    data['confirmed_phishing'] = not was_correct
-                lines[i] = json.dumps(data) + "\n"
-                updated = True
-                break
-        
-        if updated:
-            with open(FEEDBACK_FILE, "w") as f:
-                f.writelines(lines)
-            
-            sample_count = len(lines)
-            if sample_count >= 50:
-                logger.warning(f"🎯 {sample_count} samples collected! Ready for model retraining")
-                return {"status": "feedback recorded", "will_trigger_retraining": True, "samples": sample_count}
-            
-            return {"status": "feedback recorded", "will_trigger_retraining": False, "samples": sample_count}
-        else:
-            return {"status": "error", "message": "Email not found in logs"}
-    
-    except Exception as e:
-        logger.error(f"Feedback error: {e}")
-        return {"status": "error", "message": str(e)}
-
 @app.get("/metrics")
 async def get_metrics():
     """MLOps: Model performance metrics"""
-    metrics = {
+    return {
         "model_version": model_metadata.get('model_version', '1.0.0'),
         "accuracy": model_metadata.get('accuracy', 0.75),
         "training_samples": model_metadata.get('training_samples', 0),
-        "status": "healthy" if model is not None else "degraded_fallback_mode"
+        "status": "healthy" if model is not None else "degraded_fallback"
     }
-    
-    if os.path.exists(FEEDBACK_FILE):
-        try:
-            with open(FEEDBACK_FILE, "r") as f:
-                logs = [json.loads(line) for line in f]
-            
-            total = len(logs)
-            blocked = sum(1 for log in logs if log.get('action') == 'BLOCK')
-            
-            metrics['total_scans'] = total
-            metrics['blocked_count'] = blocked
-            metrics['block_rate'] = round(blocked / total * 100, 2) if total > 0 else 0
-            metrics['feedback_samples'] = total
-        except:
-            pass
-    
-    return metrics
 
 @app.get("/health")
 async def health_check():
@@ -268,7 +159,6 @@ async def health_check():
         "status": "healthy",
         "model_loaded": model is not None,
         "model_version": model_metadata.get('model_version', 'unknown'),
-        "fallback_mode": model is None,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -279,13 +169,7 @@ async def root():
         "service": "AI Phishing Detection API",
         "version": "1.0.0",
         "description": "MLOps + DevSecOps: Automated security enforcement",
-        "endpoints": {
-            "/scan": "POST - Scan email for phishing",
-            "/feedback": "POST - Provide feedback for retraining",
-            "/metrics": "GET - View model metrics",
-            "/health": "GET - Health check",
-            "/docs": "GET - Swagger documentation"
-        },
+        "endpoints": ["/scan", "/feedback", "/metrics", "/health", "/docs"],
         "status": "running"
     }
 
