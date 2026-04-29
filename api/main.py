@@ -1,204 +1,93 @@
 """
-DevSecOps + AI: Real-time Phishing Detection with Enforcement
-MLOps Feedback Loop + Automated Security Gates
+Phishing Detection Model Training Script
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
-from datetime import datetime
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 import joblib
-import logging
 import json
 import os
-import secrets
-from typing import Optional
+from datetime import datetime
 
 
-# Configure logging for SIEM integration
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def create_dataset():
+    """Create phishing detection dataset"""
+    phishing_emails = [
+        "Your account has been compromised. Click here to verify immediately.",
+        "Urgent: Update your payment information to avoid suspension.",
+        "Unusual login detected from Russia. Verify your identity now.",
+        "Congratulations! You won $1000 gift card. Click to claim.",
+        "Your invoice #INV-2024 is past due. Pay immediately."
+    ]
 
-app = FastAPI(
-    title="AI Phishing Detection API",
-    description="MLOps + DevSecOps: Automated security enforcement",
-    version="1.0.0"
-)
+    legitimate_emails = [
+        "Meeting reminder: DevOps sync at 2 PM tomorrow.",
+        "Your build #1234 completed successfully. Logs attached.",
+        "Weekly report: Q4 metrics are now available.",
+        "Password change confirmation for your corporate account.",
+        "Your PR #567 has been approved and merged to main branch."
+    ]
 
-
-# Trusted hosts middleware (allows Azure domains)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*.azurewebsites.net", "*.azurecontainerapps.io", "localhost", "127.0.0.1", "*"]
-)
-
-
-# Add CORS middleware for web access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    emails = phishing_emails + legitimate_emails
+    labels = [1] * len(phishing_emails) + [0] * len(legitimate_emails)
+    return pd.DataFrame({'email': emails, 'label': labels})
 
 
-# API Key authentication
-API_KEY = os.getenv("API_KEY", secrets.token_urlsafe(32))
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+def train_model():
+    """Train phishing detection model"""
+    print("=" * 60)
+    print("Training Phishing Detection Model")
+    print("=" * 60)
 
+    # Create dataset
+    df = create_dataset()
+    print(f"Dataset: {len(df)} emails")
 
-async def verify_api_key(api_key: str = Depends(api_key_header)):
-    """Verify API key for protected endpoints"""
-    if api_key is None:
-        return None
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return api_key
+    # Vectorize text
+    vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
+    X = vectorizer.fit_transform(df['email'])
+    y = df['label']
 
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    print(f"Training samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
 
-# Load model with error handling
-MODEL_PATH = os.getenv("MODEL_PATH", "model/phishing_model.pkl")
-VECTORIZER_PATH = os.getenv("VECTORIZER_PATH", "model/vectorizer.pkl")
-METADATA_PATH = os.getenv("METADATA_PATH", "model/metadata.json")
+    # Train model
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
 
-model = None
-vectorizer = None
-model_metadata = {'model_version': 'unknown', 'accuracy': 0, 'training_samples': 0}
+    # Evaluate
+    y_pred = model.predict(X_test)
+    accuracy = model.score(X_test, y_test)
 
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred, target_names=['Legitimate', 'Phishing']))
+    print(f"\nAccuracy: {accuracy:.2%}")
 
-try:
-    if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
-        model = joblib.load(MODEL_PATH)
-        vectorizer = joblib.load(VECTORIZER_PATH)
-        if os.path.exists(METADATA_PATH):
-            with open(METADATA_PATH, 'r') as f:
-                model_metadata = json.load(f)
-        logger.info(f"✅ Model loaded - Version: {model_metadata.get('model_version', 'unknown')}")
-    else:
-        logger.warning(f"⚠️ Model files not found at {MODEL_PATH}")
-except Exception as e:
-    logger.error(f"❌ Failed to load model: {e}")
+    # Save model
+    os.makedirs('model', exist_ok=True)
+    joblib.dump(model, 'model/phishing_model.pkl')
+    joblib.dump(vectorizer, 'model/vectorizer.pkl')
 
-
-class EmailScanRequest(BaseModel):
-    email_content: str = Field(..., min_length=1, max_length=5000)
-    sender: Optional[str] = None
-    subject: Optional[str] = None
-    source: Optional[str] = "api"
-
-
-class ScanResponse(BaseModel):
-    risk_score: float
-    is_phishing: bool
-    confidence: float
-    action: str
-    model_version: str
-    timestamp: str
-
-
-FEEDBACK_FILE = "feedback_log.json"
-
-
-def simple_fallback_detection(email_content: str) -> float:
-    """Simple rule-based detection when ML model unavailable"""
-    email_lower = email_content.lower()
-    phishing_patterns = ['verify', 'click here', 'urgent', 'compromised', 'password', 'account']
-    score = sum(0.15 for p in phishing_patterns if p in email_lower)
-    return min(score, 1.0)
-
-
-@app.post("/scan", response_model=ScanResponse)
-async def scan_email(request: EmailScanRequest, background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
-    """AI-powered scan with automatic enforcement (DevSecOps gate)"""
-    logger.info(f"📧 Scanning email from: {request.sender or 'unknown'}")
-
-    try:
-        if model is not None and vectorizer is not None:
-            email_vector = vectorizer.transform([request.email_content])
-            proba = model.predict_proba(email_vector)[0]
-            risk_score = float(proba[1])
-        else:
-            risk_score = simple_fallback_detection(request.email_content)
-            logger.info("Using fallback rule-based detection")
-
-        confidence = abs(risk_score - 0.5) * 2
-
-        if risk_score > 0.75:
-            action = "BLOCK"
-            logger.warning(f"🚨 BLOCKED (score: {risk_score:.2%})")
-        elif risk_score > 0.5:
-            action = "QUARANTINE"
-            logger.warning(f"⚠️ QUARANTINED (score: {risk_score:.2%})")
-        else:
-            action = "ALLOW"
-            logger.info(f"✅ ALLOWED (score: {risk_score:.2%})")
-
-        return ScanResponse(
-            risk_score=risk_score,
-            is_phishing=risk_score > 0.5,
-            confidence=confidence,
-            action=action,
-            model_version=model_metadata.get('model_version', '1.0.0'),
-            timestamp=datetime.utcnow().isoformat()
-        )
-    except Exception as e:
-        logger.error(f"Scan error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
-
-
-@app.get("/metrics")
-async def get_metrics():
-    """MLOps: Model performance metrics"""
-    metrics = {
-        "model_version": model_metadata.get('model_version', '1.0.0'),
-        "accuracy": model_metadata.get('accuracy', 0.75),
-        "training_samples": model_metadata.get('training_samples', 0),
-        "status": "healthy" if model is not None else "degraded_fallback"
+    # Save metadata
+    metadata = {
+        'model_version': f"v{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        'training_date': datetime.now().isoformat(),
+        'accuracy': float(accuracy),
+        'training_samples': len(df)
     }
 
-    if os.path.exists(FEEDBACK_FILE):
-        try:
-            with open(FEEDBACK_FILE, "r") as f:
-                logs = [json.loads(line) for line in f]
+    with open('model/metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=2)
 
-            total = len(logs)
-            blocked = sum(1 for log in logs if log.get('action') == 'BLOCK')
-
-            metrics['total_scans'] = total
-            metrics['blocked_count'] = blocked
-            metrics['block_rate'] = round(blocked / total * 100, 2) if total > 0 else 0
-            metrics['feedback_samples'] = total
-        except Exception:
-            pass
-
-    return metrics
-
-
-@app.get("/health")
-async def health_check():
-    """Health check for container orchestration"""
-    return {
-        "status": "healthy",
-        "model_loaded": model is not None,
-        "model_version": model_metadata.get('model_version', 'unknown'),
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-@app.get("/")
-async def root():
-    """Root endpoint with API info"""
-    return {
-        "service": "AI Phishing Detection API",
-        "version": "1.0.0",
-        "description": "MLOps + DevSecOps: Automated security enforcement",
-        "endpoints": ["/scan", "/feedback", "/metrics", "/health", "/docs"],
-        "status": "running"
-    }
+    # Fixed: Removed the 'f' prefix from this print statement
+    print("Model saved to model/phishing_model.pkl")
+    return model, vectorizer
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    train_model()
