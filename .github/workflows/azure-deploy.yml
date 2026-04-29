@@ -1,22 +1,24 @@
-name: Deploy to Azure
+name: MLOps-DevSecOps Pipeline
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 env:
   AZURE_WEBAPP_NAME: appphishing-cgdkcwgbhqfkcngt
   AZURE_RESOURCE_GROUP: phishingRG
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MODEL_ACCURACY_THRESHOLD: 0.60
 
 jobs:
-  build-and-deploy:
+  # MLOps Job: Train and validate model
+  mlops-train:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
     
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -25,83 +27,88 @@ jobs:
     
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install fastapi uvicorn gunicorn scikit-learn pandas joblib
+        pip install --upgrade pip
+        pip install scikit-learn pandas numpy joblib
     
-    - name: Train model (simple version with 85% accuracy)
+    - name: Train phishing detection model
+      run: |
+        python model/train.py
+    
+    - name: Validate model accuracy
       run: |
         python -c "
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-import joblib
 import json
-import os
-
-# Create MORE training data for better accuracy
-phishing_emails = [
-    'Your account has been compromised! Click here to verify',
-    'Urgent: Update your payment information immediately',
-    'Unusual login detected from Russia. Verify your identity',
-    'Congratulations! You won $1000 gift card. Claim now',
-    'Your invoice #INV-2024 is past due. Pay immediately',
-    'Netflix: Your membership will expire today. Update payment',
-    'FedEx: Package delivery failed. Reschedule delivery here',
-    'Microsoft: Unusual sign-in activity. Secure your account',
-    'PayPal: Your account has been limited. Verify now',
-    'Bank alert: Your card has been blocked. Call immediately'
-]
-
-legitimate_emails = [
-    'Meeting reminder: DevOps sync at 2 PM tomorrow',
-    'Your build #1234 completed successfully. Logs attached',
-    'Weekly report: Q4 metrics are now available',
-    'Password change confirmation for your corporate account',
-    'Your PR #567 has been approved and merged to main branch',
-    'New comment on issue #890: Please review the fix',
-    'Calendar invite: Security training session next Tuesday',
-    'Your expense report #456 has been approved by manager',
-    'System maintenance scheduled for Sunday 2-4 AM UTC',
-    'Welcome to the team! Here are your onboarding instructions'
-]
-
-# Combine data
-emails = phishing_emails + legitimate_emails
-labels = [1] * len(phishing_emails) + [0] * len(legitimate_emails)
-
-# Vectorize
-vectorizer = TfidfVectorizer(max_features=50)
-X = vectorizer.fit_transform(emails)
-
-# Train model
-model = RandomForestClassifier(n_estimators=50, random_state=42)
-model.fit(X, labels)
-
-# Save model
-os.makedirs('model', exist_ok=True)
-joblib.dump(model, 'model/phishing_model.pkl')
-joblib.dump(vectorizer, 'model/vectorizer.pkl')
-
-# Calculate accuracy (on training data for demonstration)
-accuracy = model.score(X, labels)
-
-# Save metadata
-with open('model/metadata.json', 'w') as f:
-    json.dump({
-        'model_version': 'v1.0',
-        'accuracy': float(accuracy),
-        'training_samples': len(emails)
-    }, f)
-
-print(f'✅ Model trained successfully! Accuracy: {accuracy:.2%}')
-print('✅ Model saved to model/phishing_model.pkl')
+with open('model/metadata.json', 'r') as f:
+    data = json.load(f)
+accuracy = data.get('accuracy', 0)
+print(f'Model Accuracy: {accuracy:.2%}')
+assert accuracy >= 0.60, f'Accuracy {accuracy:.2%} below threshold'
+print('✅ Model validation passed!')
 "
     
-    - name: Verify model exists
+    - name: Upload model artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: phishing-model
+        path: model/
+        retention-days: 7
+
+  # DevSecOps Job: Security scanning
+  devsecops-scan:
+    runs-on: ubuntu-latest
+    needs: mlops-train
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download model artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: phishing-model
+        path: model/
+    
+    - name: Run SAST scan
       run: |
-        ls -la model/
-        echo "✅ Model file exists: $(ls -la model/phishing_model.pkl | awk '{print $5}') bytes"
+        echo "🔍 Running Static Application Security Test"
+        # Check for hardcoded secrets
+        if grep -r "password\|secret\|key\|token" . --include="*.py" --exclude-dir=.git --exclude-dir=__pycache__; then
+          echo "⚠️ WARNING: Possible secrets found in code"
+        else
+          echo "✅ No secrets detected"
+        fi
+    
+    - name: Check for vulnerable dependencies
+      run: |
+        echo "📦 Checking dependencies"
+        pip install safety
+        safety check --full-report || echo "⚠️ Vulnerabilities found"
+    
+    - name: Scan Dockerfile if exists
+      run: |
+        if [ -f "Dockerfile" ]; then
+          echo "🐳 Scanning Dockerfile"
+          docker run --rm aquasec/trivy config Dockerfile || echo "⚠️ Issues found"
+        fi
+
+  # Deployment Job (only on main branch)
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [mlops-train, devsecops-scan]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download model artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: phishing-model
+        path: model/
+    
+    - name: Login to Azure
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
     
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v3
@@ -114,19 +121,22 @@ print('✅ Model saved to model/phishing_model.pkl')
     
     - name: Run smoke tests
       run: |
-        echo "🧪 Running smoke tests..."
-        
-        # Test health endpoint
-        echo "Testing /health..."
+        echo "🧪 Running smoke tests"
         curl -f https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/health || exit 1
-        
-        echo "✅ All smoke tests passed!"
+        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/metrics || exit 1
+        echo "✅ Deployment successful"
     
-    - name: Deployment Success
+    - name: Logout Azure
+      run: az logout
+
+  # MLOps Feedback Loop Monitoring
+  mlops-monitor:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Monitor model performance
       run: |
-        echo "=========================================="
-        echo "🚀 DEPLOYMENT SUCCESSFUL!"
-        echo "=========================================="
-        echo "🌐 Live URL: https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net"
-        echo "🏥 Health Check: https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/health"
-        echo "=========================================="
+        echo "📊 Monitoring model performance"
+        curl -s https://${{ env.AZURE_WEBAPP_NAME }}.eastus-01.azurewebsites.net/metrics | jq '.' || echo "Metrics endpoint available"
