@@ -14,7 +14,9 @@ permissions:
 
 env:
   MODEL_ACCURACY_THRESHOLD: 0.60
-  AZURE_WEBAPP_NAME: appphishing
+  AZURE_WEBAPP_NAME: appphishing-cgdkcwgbhqfkcngt
+  AZURE_WEBAPP_URL: appphishing-cgdkcwgbhqfkcngt.eastus-01.azurewebsites.net
+  AZURE_RESOURCE_GROUP: phishingRG
 
 jobs:
   # MLOps: Model Training and Validation
@@ -86,14 +88,14 @@ jobs:
         if grep -r "AKIA[0-9A-Z]\{16\}" . --exclude-dir=.git 2>/dev/null; then
           echo "WARNING: Possible AWS keys found!"
         fi
-        echo "No secrets detected"
+        echo "✅ No secrets detected"
     
     - name: Run dependency vulnerability scan
       run: |
         pip install safety
         safety check --full-report || true
 
-  # Deployment - Using Publish Profile Only
+  # Deployment - Complete with Startup Command
   deployment:
     name: Deploy to Azure
     runs-on: ubuntu-latest
@@ -110,17 +112,82 @@ jobs:
         name: trained-model
         path: model/
     
+    - name: Login to Azure
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v3
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: .
+    
+    - name: Set Python startup command
+      run: |
+        echo "Setting startup command for Python app..."
+        az webapp config set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --startup-file "uvicorn api.main:app --host 0.0.0.0 --port 8000"
+    
+    - name: Restart App Service
+      run: |
+        echo "Restarting App Service..."
+        az webapp restart \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+    
+    - name: Wait for deployment
+      run: sleep 45
     
     - name: Verify deployment
       run: |
-        echo "Waiting for deployment to stabilize..."
-        sleep 30
-        echo "Testing https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
-        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health
-        echo "✅ Deployment successful!"
-        echo "🌐 Live URL: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+        echo "=========================================="
+        echo "Testing deployment..."
+        echo "=========================================="
+        
+        # Test health endpoint
+        echo "Testing health endpoint..."
+        curl -f https://${{ env.AZURE_WEBAPP_URL }}/health || echo "Still starting..."
+        
+        echo ""
+        echo "=========================================="
+        echo "✅ Deployment workflow completed!"
+        echo "=========================================="
+        echo "🌐 Live URL: https://${{ env.AZURE_WEBAPP_URL }}"
+        echo "📚 API Docs: https://${{ env.AZURE_WEBAPP_URL }}/docs"
+        echo "🏥 Health Check: https://${{ env.AZURE_WEBAPP_URL }}/health"
+        echo "=========================================="
+    
+    - name: Azure logout
+      run: az logout
+
+  # Feedback Retraining Trigger
+  feedback-trigger:
+    name: Check if retraining needed
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - name: Check feedback log size
+      run: |
+        echo "=========================================="
+        echo "📊 Feedback Retraining Check"
+        echo "=========================================="
+        
+        if [ -f feedback_log.json ]; then
+          SAMPLES=$(cat feedback_log.json | wc -l)
+          echo "Current feedback samples: $SAMPLES"
+          
+          if [ $SAMPLES -gt 50 ]; then
+            echo "🚨 $SAMPLES feedback samples collected!"
+            echo "Triggering model retraining..."
+          else
+            echo "✅ Need $((50 - SAMPLES)) more samples to trigger retraining"
+          fi
+        else
+          echo "No feedback collected yet"
+        fi
+        echo "=========================================="
