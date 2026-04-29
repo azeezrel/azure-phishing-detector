@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Phishing Test</title>
+    <style>
+        body {
+            background: #0a0e27;
+            color: white;
+            font-family: Arial;
+            padding: 20px;
+        }
+        button {
+            background: #00d4ff;
+            color: black;
+            padding: 15px 30px;
+            margin: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .result {
+            background: #1a1f3a;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 10px;
+            font-size: 16px;
+        }
+        h1 {
+            color: #00d4ff;
+        }
+        .risk-high {
+            color: #ff4444;
+        }
+        .risk-low {
+            color: #00cc66;
+        }
+    </style>
+</head>
+<body>
+    <h1>🛡️ AI Phishing Detection Test</h1>
+    <p>Click a button to test the AI</p>
+    
+    <button onclick="testPhishing()">🎣 Test Phishing Email</button>
+    <button onclick="testNormal()">📄 Test Normal Email</button>
+    <button onclick="testCEO()">👔 Test CEO Fraud</button>
+    
+    <div id="result" class="result">
+        Click a button above...
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000/scan';
+        
+        async function testPhishing() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '🤔 AI analyzing phishing email...';
+            
+            const emailData = {
+                email_content: "URGENT: Your PayPal account has been suspended! Click here to verify your account immediately: http://bit.ly/paypal-verify",
+                sender: "security@paypal-secure.tk",
+                subject: "URGENT: Account Suspended - Action Required"
+            };
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(emailData)
+                });
+                const data = await response.json();
+                
+                const riskClass = data.risk_score >= 70 ? 'risk-high' : 'risk-low';
+                resultDiv.innerHTML = `
+                    <strong>🎣 PHISHING EMAIL TEST</strong><br><br>
+                    <strong>AI Decision:</strong> ${data.action}<br>
+                    <strong>Risk Score:</strong> <span class="${riskClass}">${data.risk_score}/200</span><br>
+                    <strong>Is Phishing:</strong> ${data.is_phishing ? 'YES - BLOCKED' : 'NO'}<br>
+                    <strong>Confidence:</strong> ${(data.confidence * 100).toFixed(1)}%<br>
+                    <strong>Alert Sent:</strong> ${data.alert_sent ? 'Yes - Security Team Notified' : 'No'}
+                `;
+            } catch(error) {
+                resultDiv.innerHTML = '❌ Error: ' + error.message;
+            }
+        }
+        
+        async function testNormal() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '🤔 AI analyzing normal email...';
+            
+            const emailData = {
+                email_content: "Hi team, here's the project update for this week. Let me know if you have any questions. Best, John",
+                sender: "john.doe@company.com",
+                subject: "Project Update - Weekly Report"
+            };
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(emailData)
+                });
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <strong>📄 NORMAL EMAIL TEST</strong><br><br>
+                    <strong>AI Decision:</strong> ${data.action}<br>
+                    <strong>Risk Score:</strong> ${data.risk_score}/200<br>
+                    <strong>Is Phishing:</strong> ${data.is_phishing ? 'YES' : 'NO - SAFE'}<br>
+                    <strong>Confidence:</strong> ${(data.confidence * 100).toFixed(1)}%
+                `;
+            } catch(error) {
+                resultDiv.innerHTML = '❌ Error: ' + error.message;
+            }
+        }
+        
+        async function testCEO() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '🤔 AI analyzing CEO fraud email...';
+            
+            const emailData = {
+                email_content: "I'm in a board meeting right now. Can you wire $15,000 to the account below urgently? Let me know when done. Account: 987654321, Routing: 123456789",
+                sender: "ceo@company.com",
+                subject: "URGENT: Wire Transfer Needed Immediately"
+            };
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(emailData)
+                });
+                const data = await response.json();
+                
+                const riskClass = data.risk_score >= 70 ? 'risk-high' : 'risk-low';
+                resultDiv.innerHTML = `
+                    <strong>👔 CEO FRAUD TEST</strong><br><br>
+                    <strong>AI Decision:</strong> ${data.action}<br>
+                    <strong>Risk Score:</strong> <span class="${riskClass}">${data.risk_score}/200</span><br>
+                    <strong>Is Phishing:</strong> ${data.is_phishing ? 'YES - BLOCKED' : 'NO'}<br>
+                    <strong>Confidence:</strong> ${(data.confidence * 100).toFixed(1)}%<br>
+                    <strong>Alert Sent:</strong> ${data.alert_sent ? 'Yes' : 'No'}
+                `;
+            } catch(error) {
+                resultDiv.innerHTML = '❌ Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

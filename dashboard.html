@@ -1,24 +1,28 @@
-@"
 <!DOCTYPE html>
 <html>
 <head>
     <title>Phishing Detection Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: Arial; margin: 0; padding: 20px; background: #f0f2f5; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px; }
+        body { font-family: Arial; margin: 20px; background: #f0f2f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 20px 0; }
         .stat-card { background: white; padding: 20px; border-radius: 10px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .stat-number { font-size: 32px; font-weight: bold; color: #667eea; }
         .stat-label { color: #666; margin-top: 10px; }
-        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .block { background: #fee; color: #c00; border-left: 4px solid #c00; }
-        .quarantine { background: #fff3e0; color: #e65100; border-left: 4px solid #e65100; }
-        .allow { background: #e8f5e9; color: #2e7d32; border-left: 4px solid #2e7d32; }
-        button { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
-        input, textarea { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; }
+        .scan-box { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+        textarea { width: 100%; height: 100px; margin: 10px 0; padding: 10px; font-family: monospace; border: 1px solid #ddd; border-radius: 5px; }
+        button { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #5a67d8; }
+        .result { margin-top: 20px; padding: 15px; border-radius: 5px; display: none; }
+        .BLOCK { background: #ffebee; color: #c62828; border: 1px solid #c62828; display: block; }
+        .ALLOW { background: #e8f5e9; color: #2e7d32; border: 1px solid #2e7d32; display: block; }
+        .QUARANTINE { background: #fff3e0; color: #e65100; border: 1px solid #e65100; display: block; }
+        .error { background: #ffebee; color: #c62828; border: 1px solid #c62828; display: block; }
+        .logs { background: white; padding: 20px; border-radius: 10px; max-height: 300px; overflow-y: auto; }
+        .log-entry { padding: 10px; border-bottom: 1px solid #eee; font-family: monospace; font-size: 12px; }
+        .api-status { background: white; padding: 10px; border-radius: 5px; margin-bottom: 20px; text-align: center; }
+        .status-ok { color: #2e7d32; }
+        .status-error { color: #c62828; }
     </style>
 </head>
 <body>
@@ -26,8 +30,12 @@
         <h1>🛡️ AI-Powered Phishing Detection Dashboard</h1>
         <p>Real-time security monitoring with MLOps + DevSecOps</p>
     </div>
-    
-    <div class="stats">
+
+    <div class="api-status" id="apiStatus">
+        ✅ API Connected - Ready to scan!
+    </div>
+
+    <div class="stats" id="stats">
         <div class="stat-card">
             <div class="stat-number" id="totalScans">0</div>
             <div class="stat-label">Total Scans</div>
@@ -45,85 +53,104 @@
             <div class="stat-label">Model Accuracy</div>
         </div>
     </div>
-    
-    <div class="container">
-        <div class="card">
-            <h3>📧 Test Email Scanner</h3>
-            <textarea id="emailContent" rows="5" placeholder="Paste email content here..."></textarea>
-            <button onclick="scanEmail()">Scan for Phishing</button>
-            <div id="scanResult"></div>
-        </div>
-        
-        <div class="card">
-            <h3>📊 Detection Metrics</h3>
-            <canvas id="metricsChart"></canvas>
+
+    <div class="scan-box">
+        <h3>📧 Test Email Scanner</h3>
+        <textarea id="emailContent" placeholder="Paste email content here to test..."></textarea>
+        <button onclick="scanEmail()">🔍 Scan for Phishing</button>
+        <div id="result" class="result"></div>
+    </div>
+
+    <div class="logs">
+        <h3>📋 Recent Scans</h3>
+        <div id="logs">
+            <div class="log-entry">No scans yet. Try scanning an email above!</div>
         </div>
     </div>
-    
-    <div class="card" style="margin-top: 20px;">
-        <h3>📋 Recent Alerts</h3>
-        <div id="alertsList"></div>
-    </div>
-    
+
     <script>
-        let chart;
-        
+        const API_URL = "http://localhost:8000";
+
+        async function loadMetrics() {
+            try {
+                const response = await fetch(`${API_URL}/metrics`);
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('totalScans').innerText = data.total_scans || 0;
+                    document.getElementById('blockedCount').innerText = data.blocked_count || 0;
+                    document.getElementById('blockRate').innerText = data.block_rate || 0;
+                    document.getElementById('modelAccuracy').innerText = Math.round((data.accuracy || 0) * 100);
+                }
+            } catch (error) {
+                console.error("Metrics error:", error);
+            }
+        }
+
         async function scanEmail() {
             const content = document.getElementById('emailContent').value;
-            if (!content) return;
+            const resultDiv = document.getElementById('result');
             
-            const response = await fetch('/api/scan', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({email_content: content})
-            });
-            const result = await response.json();
-            
-            const resultDiv = document.getElementById('scanResult');
-            resultDiv.innerHTML = `
-                <div class="alert ${result.action.toLowerCase()}">
-                    <strong>${result.action}</strong><br>
-                    Risk Score: ${(result.risk_score * 100).toFixed(1)}%<br>
-                    Confidence: ${(result.confidence * 100).toFixed(1)}%<br>
-                    Is Phishing: ${result.is_phishing ? '⚠️ YES' : '✅ NO'}
-                </div>
-            `;
-            
-            loadMetrics();
-        }
-        
-        async function loadMetrics() {
-            const response = await fetch('/api/metrics');
-            const data = await response.json();
-            
-            document.getElementById('totalScans').textContent = data.total_scans || 0;
-            document.getElementById('blockedCount').textContent = data.blocked_count || 0;
-            document.getElementById('blockRate').textContent = (data.block_rate || 0) + '%';
-            document.getElementById('modelAccuracy').textContent = Math.round((data.accuracy || 0) * 100) + '%';
-            
-            if (chart) chart.destroy();
-            const ctx = document.getElementById('metricsChart').getContext('2d');
-            chart = new Chart(ctx, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Blocked', 'Quarantined', 'Allowed'],
-                    datasets: [{
-                        data: [
-                            data.blocked_count || 0,
-                            data.quarantined_count || 0,
-                            (data.total_scans || 0) - (data.blocked_count || 0) - (data.quarantined_count || 0)
-                        ],
-                        backgroundColor: ['#c62828', '#e65100', '#2e7d32']
-                    }]
+            if (!content) {
+                alert("Please enter email content to scan");
+                return;
+            }
+
+            resultDiv.innerHTML = "🔄 Scanning... Please wait";
+            resultDiv.className = "result";
+            resultDiv.style.display = "block";
+
+            try {
+                const response = await fetch(`${API_URL}/scan`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email_content: content
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
-            });
+
+                const result = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <strong>${result.action === "BLOCK" ? "🚫 BLOCKED" : result.action === "QUARANTINE" ? "⚠️ QUARANTINED" : "✅ ALLOWED"}</strong><br><br>
+                    📊 Risk Score: ${(result.risk_score * 100).toFixed(1)}%<br>
+                    🎯 Is Phishing: ${result.is_phishing ? "⚠️ YES" : "✅ NO"}<br>
+                    🔒 Action Taken: ${result.action}<br>
+                    📦 Model Version: ${result.model_version}<br>
+                    ⏰ Time: ${new Date(result.timestamp).toLocaleTimeString()}
+                `;
+                resultDiv.className = `result ${result.action}`;
+                
+                // Refresh metrics
+                await loadMetrics();
+                
+                // Add to logs
+                const logsDiv = document.getElementById('logs');
+                const logEntry = document.createElement('div');
+                logEntry.className = 'log-entry';
+                logEntry.innerHTML = `${new Date().toLocaleTimeString()} - ${result.action} - Risk: ${(result.risk_score * 100).toFixed(1)}% - ${result.is_phishing ? '⚠️ Phishing Detected' : '✅ Safe'}`;
+                logsDiv.insertBefore(logEntry, logsDiv.firstChild);
+                
+                // Clear textarea after successful scan
+                document.getElementById('emailContent').value = '';
+                
+            } catch (error) {
+                console.error("Scan error:", error);
+                resultDiv.innerHTML = `❌ Error: ${error.message}<br><br>Make sure the API is running on port 8000`;
+                resultDiv.className = "result error";
+            }
         }
-        
-        setInterval(loadMetrics, 5000);
+
+        // Load metrics on page load
         loadMetrics();
+        
+        // Refresh metrics every 10 seconds
+        setInterval(loadMetrics, 10000);
     </script>
 </body>
 </html>
-"@ | Out-File -FilePath "dashboard.html" -Encoding utf8
-
-Write-Host "✅ Dashboard created!" -ForegroundColor Green
